@@ -25,13 +25,13 @@ function getBinaryPath(): string {
     process.exit(1);
   }
 
-  const binaryName = platform === 'windows' ? 'zdl.exe' : 'zdl';
+  const binaryName = platform === 'windows' ? 'tabnit.exe' : 'tabnit';
 
   // STRATEGY:
   // 1. Dev Mode: Look in the project root zig-out/bin (if running from repo)
   // 2. Prod Mode: Look in a platform-specific subfolder or adjacent bin folder
   
-  // Checking Dev Mode path (../../zig-out/bin/zdl)
+  // Checking Dev Mode path (../../zig-out/bin/tabnit)
   const devPath = path.resolve(__dirname, '..', '..', 'zig-out', 'bin', binaryName);
   
   if (fs.existsSync(devPath)) {
@@ -59,7 +59,7 @@ function main() {
   });
   
   child.on('error', (err) => {
-    console.error('Failed to start zdl binary:', err);
+    console.error('Failed to start tabnit binary:', err);
     process.exit(1);
   });
 }
