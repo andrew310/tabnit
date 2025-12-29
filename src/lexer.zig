@@ -34,6 +34,12 @@ pub const Lexer = struct {
         };
     }
 
+    pub fn peek(self: *Lexer) Token {
+        const saved = self.*;
+        defer self.* = saved;
+        return self.next();
+    }
+
     fn current_col(self: *Lexer) usize {
         return self.pos - self.line_start_pos + 1;
     }
@@ -93,7 +99,7 @@ pub const Lexer = struct {
         }
 
         if (self.pos >= self.source.len) {
-            return .{ .typ = .EOF, .text = "", .line = self.line, .col = self.current_col() };
+            return .{ .typ = .EOF, .text = self.source[self.source.len..], .line = self.line, .col = self.current_col() };
         }
 
         const start = self.pos;
@@ -104,23 +110,23 @@ pub const Lexer = struct {
         // Punctuation
         if (char == '(') {
             self.advance();
-            return .{ .typ = .OpenParen, .text = "(", .line = start_line, .col = start_col };
+            return .{ .typ = .OpenParen, .text = self.source[start .. start + 1], .line = start_line, .col = start_col };
         }
         if (char == ')') {
             self.advance();
-            return .{ .typ = .CloseParen, .text = ")", .line = start_line, .col = start_col };
+            return .{ .typ = .CloseParen, .text = self.source[start .. start + 1], .line = start_line, .col = start_col };
         }
         if (char == ',') {
             self.advance();
-            return .{ .typ = .Comma, .text = ",", .line = start_line, .col = start_col };
+            return .{ .typ = .Comma, .text = self.source[start .. start + 1], .line = start_line, .col = start_col };
         }
         if (char == ';') {
             self.advance();
-            return .{ .typ = .Semicolon, .text = ";", .line = start_line, .col = start_col };
+            return .{ .typ = .Semicolon, .text = self.source[start .. start + 1], .line = start_line, .col = start_col };
         }
         if (char == '.') {
             self.advance();
-            return .{ .typ = .Dot, .text = ".", .line = start_line, .col = start_col };
+            return .{ .typ = .Dot, .text = self.source[start .. start + 1], .line = start_line, .col = start_col };
         }
 
         // Single-quoted strings (values)
@@ -131,8 +137,8 @@ pub const Lexer = struct {
                 if (self.source[self.pos] == '\'') {
                     // Check for escaped quote ''
                     if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '\'') {
-                        self.advance(); // first '
-                        self.advance(); // second '
+                        self.advance(); // first ''
+                        self.advance(); // second ''
                         continue;
                     } else {
                         break; // End of string
@@ -141,7 +147,7 @@ pub const Lexer = struct {
                 self.advance();
             }
             const content = self.source[content_start..self.pos];
-            if (self.pos < self.source.len) self.advance(); // skip closing '
+            if (self.pos < self.source.len) self.advance(); // skip closing ''
             return .{ .typ = .String, .text = content, .line = start_line, .col = start_col };
         }
 
@@ -158,9 +164,6 @@ pub const Lexer = struct {
                      break;
                  }
                  if (!std.ascii.isAlphanumeric(c) and c != '_') {
-                     // Not a dollar quote tag? Reset or treat as identifier?
-                     // For simplicity, assume if it starts with $, it's a quote or variable.
-                     // But if we hit space, it's not a tag.
                      break; 
                  }
                  self.advance();
@@ -182,7 +185,6 @@ pub const Lexer = struct {
                      self.advance();
                  }
              }
-             // If not a valid tag (e.g. just $1 variable), treat as Identifier
              return .{ .typ = .Identifier, .text = tag, .line = start_line, .col = start_col };
         }
 
@@ -220,7 +222,8 @@ fn isKeyword(text: []const u8) bool {
         "ON", "DELETE", "CASCADE", "SET", "UNIQUE", "SCHEMA",
         "FUNCTION", "RETURNS", "LANGUAGE", "OR", "REPLACE",
         "INSERT", "INTO", "VALUES", "INDEX", "TRIGGER", "EXTENSION",
-        "DO", "BEGIN", "END",
+        "DO", "BEGIN", "END", "GENERATED", "ALWAYS", "BY", "IDENTITY",
+        "CONSTRAINT", "CHECK",
     };
     inline for (keywords) |kw| {
         if (eqlIgnoreCase(text, kw)) return true;

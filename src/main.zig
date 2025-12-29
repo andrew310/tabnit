@@ -77,8 +77,7 @@ fn parseFile(allocator: std.mem.Allocator, file_path: []const u8) !void {
     };
     defer result.deinit(allocator);
 
-    std.debug.print("---\n", .{}); // Added missing newline for clarity
-    std.debug.print("{s} ({d} statements) ---\n", .{ file_path, result.statements.items.len });
+    std.debug.print("📜 {s} ({d} statements)\n", .{ file_path, result.statements.items.len });
 
     for (result.statements.items) |stmt| {
         switch (stmt) {

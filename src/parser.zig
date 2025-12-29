@@ -85,6 +85,21 @@ pub const Parser = struct {
         }
     }
 
+    fn skipUntilCommaOrClose(self: *Parser) !void {
+        var depth: usize = 0;
+        while (true) {
+            const t = self.lexer.peek();
+            if (t.typ == .EOF) break;
+            if (t.typ == .OpenParen) depth += 1;
+            if (t.typ == .CloseParen) {
+                if (depth == 0) break;
+                depth -= 1;
+            }
+            if (t.typ == .Comma and depth == 0) break;
+            _ = self.lexer.next();
+        }
+    }
+
     fn parseCreateFunction(self: *Parser) !ast.CreateFunctionStmt {
         const name_token = self.lexer.next();
         if (name_token.typ != .Identifier and name_token.typ != .Keyword) return error.ExpectedIdentifier;
@@ -127,11 +142,10 @@ pub const Parser = struct {
 
         if (lexer.eqlIgnoreCase(token.text, "IF")) {
             const not_kw = self.lexer.next();
-            if (!lexer.eqlIgnoreCase(not_kw.text, "NOT")) return error.ExpectedNot;
-
-            const exists_kw = self.lexer.next();
-            if (!lexer.eqlIgnoreCase(exists_kw.text, "EXISTS")) return error.ExpectedExists;
-
+            if (lexer.eqlIgnoreCase(not_kw.text, "NOT")) {
+                _ = self.lexer.next(); // EXISTS
+            }
+            // if it was just IF EXISTS, we already consumed EXISTS
             stmt.if_not_exists = true;
             token = self.lexer.next();
         }
@@ -179,7 +193,10 @@ pub const Parser = struct {
         errdefer stmt.deinit(self.allocator);
 
         if (lexer.eqlIgnoreCase(token.text, "IF")) {
-            _ = self.lexer.next(); // skip EXISTS
+            const maybe_not = self.lexer.next();
+            if (lexer.eqlIgnoreCase(maybe_not.text, "NOT")) {
+                _ = self.lexer.next(); // EXISTS
+            }
             stmt.if_exists = true;
             token = self.lexer.next();
         }
@@ -255,10 +272,33 @@ pub const Parser = struct {
                 continue;
             }
 
+            if (name_token.typ == .Keyword and (lexer.eqlIgnoreCase(name_token.text, "CONSTRAINT") or lexer.eqlIgnoreCase(name_token.text, "CHECK"))) {
+                try self.skipUntilCommaOrClose();
+                const after = self.lexer.next();
+                if (after.typ == .CloseParen) break;
+                if (after.typ != .Comma) return error.ExpectedCommaOrClose;
+                continue;
+            }
+
             if (name_token.typ != .Identifier and name_token.typ != .Keyword) return error.ExpectedColumnName;
 
             const type_token = self.lexer.next();
             if (type_token.typ != .Identifier and type_token.typ != .Keyword) return error.ExpectedColumnType;
+
+            var data_type = type_token.text;
+            if (self.lexer.peek().typ == .OpenParen) {
+                _ = self.lexer.next(); // consume (
+                var depth: usize = 1;
+                while (depth > 0) {
+                    const t = self.lexer.next();
+                    if (t.typ == .EOF) break;
+                    if (t.typ == .OpenParen) depth += 1;
+                    if (t.typ == .CloseParen) depth -= 1;
+                    const end_offset = (@intFromPtr(t.text.ptr) + t.text.len) - @intFromPtr(self.sql.ptr);
+                    const start_offset = @intFromPtr(data_type.ptr) - @intFromPtr(self.sql.ptr);
+                    data_type = self.sql[start_offset..end_offset];
+                }
+            }
 
             var nullable: bool = true;
             var is_primary_key: bool = false;
@@ -352,6 +392,39 @@ pub const Parser = struct {
                     }
 
                     foreign_key = fk;
+                } else if (lexer.eqlIgnoreCase(sep.text, "GENERATED")) {
+                    // Skip ALWAYS AS IDENTITY or BY DEFAULT AS IDENTITY
+                    while (true) {
+                        const next_t = self.lexer.peek();
+                        if (next_t.typ == .Keyword) {
+                            if (lexer.eqlIgnoreCase(next_t.text, "ALWAYS") or
+                                lexer.eqlIgnoreCase(next_t.text, "BY") or
+                                lexer.eqlIgnoreCase(next_t.text, "DEFAULT") or
+                                lexer.eqlIgnoreCase(next_t.text, "AS") or
+                                lexer.eqlIgnoreCase(next_t.text, "IDENTITY"))
+                            {
+                                _ = self.lexer.next();
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                    sep = self.lexer.next();
+                } else if (lexer.eqlIgnoreCase(sep.text, "CONSTRAINT")) {
+                    _ = self.lexer.next(); // name
+                    sep = self.lexer.next();
+                } else if (lexer.eqlIgnoreCase(sep.text, "CHECK")) {
+                    const open = self.lexer.next();
+                    if (open.typ == .OpenParen) {
+                        var depth: usize = 1;
+                        while (depth > 0) {
+                            const t = self.lexer.next();
+                            if (t.typ == .EOF) break;
+                            if (t.typ == .OpenParen) depth += 1;
+                            if (t.typ == .CloseParen) depth -= 1;
+                        }
+                    }
+                    sep = self.lexer.next();
                 } else {
                     break;
                 }
@@ -359,7 +432,7 @@ pub const Parser = struct {
 
             try stmt.columns.append(self.allocator, ast.Column{
                 .name = name_token.text,
-                .data_type = type_token.text,
+                .data_type = data_type,
                 .nullable = if (is_primary_key) false else nullable,
                 .primary_key = is_primary_key,
                 .unique = is_unique,
