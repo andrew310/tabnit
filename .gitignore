@@ -3,3 +3,11 @@ zig-out/
 node_modules/
 cli/dist/
 .DS_Store
+.tabnit/
+repro.sql
+loan_repro.sql
+sample.sql
+modified.sql
+probe*
+snapshot.json
+diff.json
