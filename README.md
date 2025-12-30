@@ -28,6 +28,7 @@ cd cli && npm install && npm link
 ```bash
 # 1. Baseline your project (creates snapshot)
 tabnit init ./sql
+# ⚠️  Commit .tabnit/snapshot.json to git! It tracks your schema state.
 
 # 2. Generate a migration after editing SQL
 tabnit up ./sql
