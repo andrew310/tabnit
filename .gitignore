@@ -4,6 +4,7 @@ node_modules/
 cli/dist/
 .DS_Store
 .tabnit/
+migrations/
 repro.sql
 loan_repro.sql
 sample.sql
