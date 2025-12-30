@@ -25,20 +25,21 @@ cd cli && npm install && npm link
 
 ## 🛠️ Usage
 
-Once linked, you can run `tabnit` from anywhere:
-
 ```bash
-# Initialize or generate a migration
-tabnit up ./sql/schema.sql
+# 1. Baseline your project (creates snapshot)
+tabnit init ./sql
+
+# 2. Generate a migration after editing SQL
+tabnit up ./sql
+
+# 3. Apply pending migrations to your database
+export DATABASE_URL=postgres://user:pass@localhost:5432/db
+tabnit apply
 ```
 
 ## 🏛️ What's in a Name?
 
-The name **Tabnit** (pronounced *tab-neet*) has deep roots in the ancient Near East:
-
-*   **The Blueprint:** In Koine Hebrew, *Tabnit* means **"Pattern," "Blueprint," or "Structure."** It is the word used in ancient texts to describe the architect's plan for a building or temple.
-*   **The Likeness:** In Phoenician, the language of the great sea-faring builders, it means **"Likeness" or "Image."**
-*   **The Mummy King:** It was also the name of a famous Phoenician King of Sidon. His sarcophagus is unique because it is "bilingual"—featuring original Egyptian hieroglyphics alongside his own Phoenician metadata.
+In Canaanite languages, the word **Tabnit** tended to mean **"Blueprint," "Pattern," or "Structure."** Like its namesake, this library acts as a bridge, taking your SQL code and turning it into a living blueprint for your database.
 
 ## 📜 License
 
