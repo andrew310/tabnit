@@ -10,26 +10,89 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print("Usage: {s} <file_or_dir> ...\n", .{args[0]});
+        std.debug.print("Usage: {s} [--json] [--diff-snapshot <file>] <file_or_dir> ...\n", .{args[0]});
         return;
     }
 
-    for (args[1..]) |path| {
-        try processPath(allocator, path);
+    var use_json = false;
+    var snapshot_path: ?[]const u8 = null;
+    var paths = std.ArrayListUnmanaged([]const u8){};
+    defer paths.deinit(allocator);
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--json")) {
+            use_json = true;
+        } else if (std.mem.eql(u8, arg, "--diff-snapshot")) {
+            i += 1;
+            if (i < args.len) {
+                snapshot_path = args[i];
+            } else {
+                std.debug.print("Error: --diff-snapshot requires a file path\n", .{});
+                return;
+            }
+        } else {
+            try paths.append(allocator, arg);
+        }
+    }
+
+    var buffers = std.ArrayListUnmanaged([]u8){};
+    defer {
+        for (buffers.items) |b| allocator.free(b);
+        buffers.deinit(allocator);
+    }
+
+    var current_statements = std.ArrayListUnmanaged(zdl.ast.Statement){};
+    defer {
+        for (current_statements.items) |*stmt| {
+            stmt.deinit(allocator);
+        }
+        current_statements.deinit(allocator);
+    }
+
+    for (paths.items) |path| {
+        const silent_mode = use_json or (snapshot_path != null);
+        try processPath(allocator, path, &current_statements, &buffers, silent_mode);
+    }
+
+    if (snapshot_path) |snap_file| {
+        // DIFF MODE
+        const snap_content = std.fs.cwd().readFileAlloc(allocator, snap_file, 100 * 1024 * 1024) catch |err| {
+             std.debug.print("Error reading snapshot file: {any}\n", .{err});
+             return;
+        };
+        defer allocator.free(snap_content);
+
+        // Parse JSON snapshot
+        const parsed = std.json.parseFromSlice([]zdl.ast.Statement, allocator, snap_content, .{}) catch |err| {
+            std.debug.print("Error parsing snapshot JSON: {any}\n", .{err});
+            return;
+        };
+        defer parsed.deinit();
+
+        var diff_res = try zdl.diff.diff(allocator, parsed.value, current_statements.items);
+        defer diff_res.deinit(allocator);
+
+        std.debug.print("{f}\n", .{std.json.fmt(diff_res.changes.items, .{})});
+
+    } else {
+        // NORMAL MODE
+        if (use_json) {
+            std.debug.print("{f}\n", .{std.json.fmt(current_statements.items, .{})});
+        }
     }
 }
 
-fn processPath(allocator: std.mem.Allocator, path: []const u8) !void {
+fn processPath(allocator: std.mem.Allocator, path: []const u8, all_statements: *std.ArrayListUnmanaged(zdl.ast.Statement), buffers: *std.ArrayListUnmanaged([]u8), silent_mode: bool) !void {
     const stat = std.fs.cwd().statFile(path) catch |err| {
         if (err == error.FileNotFound) {
-            // Might be a directory, statFile fails on dirs on some systems or versions
-            // Try opening as directory
             var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch {
-                 std.debug.print("Error: Could not find or open {s}\n", .{path});
+                 if (!silent_mode) std.debug.print("Error: Could not find or open {s}\n", .{path});
                  return;
             };
             defer dir.close();
-            try walkDir(allocator, dir, path);
+            try walkDir(allocator, dir, path, all_statements, buffers, silent_mode);
             return;
         }
         return err;
@@ -38,13 +101,13 @@ fn processPath(allocator: std.mem.Allocator, path: []const u8) !void {
     if (stat.kind == .directory) {
         var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
         defer dir.close();
-        try walkDir(allocator, dir, path);
+        try walkDir(allocator, dir, path, all_statements, buffers, silent_mode);
     } else {
-        try parseFile(allocator, path);
+        try parseFile(allocator, path, all_statements, buffers, silent_mode);
     }
 }
 
-fn walkDir(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !void {
+fn walkDir(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, all_statements: *std.ArrayListUnmanaged(zdl.ast.Statement), buffers: *std.ArrayListUnmanaged([]u8), silent_mode: bool) !void {
     var walker = try dir.walk(allocator);
     defer walker.deinit();
 
@@ -52,66 +115,37 @@ fn walkDir(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8) !voi
         if (entry.kind == .file and std.mem.endsWith(u8, entry.path, ".sql")) {
             const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
             defer allocator.free(full_path);
-            try parseFile(allocator, full_path);
+            try parseFile(allocator, full_path, all_statements, buffers, silent_mode);
         }
     }
 }
 
-fn parseFile(allocator: std.mem.Allocator, file_path: []const u8) !void {
+fn parseFile(allocator: std.mem.Allocator, file_path: []const u8, all_statements: *std.ArrayListUnmanaged(zdl.ast.Statement), buffers: *std.ArrayListUnmanaged([]u8), silent_mode: bool) !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        std.debug.print("Could not open file {s}: {any}\n", .{file_path, err});
+        if (!silent_mode) std.debug.print("Could not open file {s}: {any}\n", .{ file_path, err });
         return;
     };
     defer file.close();
 
     const file_size = try file.getEndPos();
     const buffer = try allocator.alloc(u8, file_size);
-    defer allocator.free(buffer);
-
     _ = try file.readAll(buffer);
+    try buffers.append(allocator, buffer);
 
     var parser = zdl.parser.Parser.init(allocator, buffer, .Postgres);
     var result = parser.parse() catch |err| {
-        std.debug.print("Error parsing {s}: {any}\n", .{file_path, err});
+        if (!silent_mode) std.debug.print("Error parsing {s}: {any}\n", .{ file_path, err });
         return;
     };
-    defer result.deinit(allocator);
-
-    std.debug.print("📜 {s} ({d} statements)\n", .{ file_path, result.statements.items.len });
-
-    for (result.statements.items) |stmt| {
-        switch (stmt) {
-            .create_type => |t| {
-                std.debug.print("TYPE {s}: ", .{t.name});
-                for (t.values.items, 0..) |val, i| {
-                    if (i > 0) std.debug.print(", ", .{});
-                    std.debug.print("'{s}'", .{val});
-                }
-                std.debug.print("\n", .{});
-            },
-            .create_table => |tbl| {
-                std.debug.print("TABLE {s}\n", .{tbl.table});
-                for (tbl.columns.items) |col| {
-                    std.debug.print("  - {s}: {s}", .{ col.name, col.data_type });
-                    if (col.primary_key) std.debug.print(" [PK]", .{});
-                    if (!col.nullable) std.debug.print(" [NOT NULL]", .{});
-                    if (col.unique) std.debug.print(" [UNIQUE]", .{});
-                    if (col.references) |ref| std.debug.print(" -> {s}({?s})", .{ ref.table, ref.column });
-                    std.debug.print("\n", .{});
-                }
-            },
-            .create_schema => |s| {
-                std.debug.print("SCHEMA {s}", .{s.name});
-                if (s.if_not_exists) std.debug.print(" (IF NOT EXISTS)", .{});
-                std.debug.print("\n", .{});
-            },
-            .create_function => |f| {
-                std.debug.print("FUNCTION {s}\n", .{f.name});
-            },
-            .ignored => |i| {
-                std.debug.print("IGNORED {s}\n", .{i.name});
-            },
-        }
+    
+    const stmts = try result.statements.toOwnedSlice(allocator);
+    defer allocator.free(stmts);
+    
+    if (!silent_mode) {
+        std.debug.print("📜 {s} ({d} statements)\n", .{ file_path, stmts.len });
     }
-    std.debug.print("\n", .{});
+
+    for (stmts) |stmt| {
+        try all_statements.append(allocator, stmt);
+    }
 }
