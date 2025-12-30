@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { generateMigration } from './sql-gen';
+import { applyMigrations } from './db';
 
 // Map Node.js arch/platform to Zig/release conventions
 const ARCH_MAP: Record<string, string> = {
@@ -50,12 +51,23 @@ function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
+  if (command === 'init') {
+    handleInitCommand(binPath, args.slice(1));
+    return;
+  }
+  
   if (command === 'up') {
     handleUpCommand(binPath, args.slice(1));
     return;
   }
 
-  // Fallback: Spawn the Zig binary, passing all arguments through
+  if (command === 'apply') {
+    const migrationsDir = path.join(process.cwd(), 'migrations');
+    applyMigrations(migrationsDir);
+    return;
+  }
+
+  // Fallback: Spawn the Zig binary
   const child = spawn(binPath, args, {
     stdio: 'inherit',
     env: process.env,
@@ -71,33 +83,44 @@ function main() {
   });
 }
 
+function handleInitCommand(binPath: string, args: string[]) {
+  const targetDir = args[0] || '.';
+  const tabnitDir = path.join(process.cwd(), '.tabnit');
+  const snapshotPath = path.join(tabnitDir, 'snapshot.json');
+
+  if (fs.existsSync(snapshotPath)) {
+    console.error("❌ Snapshot already exists. Use 'up' to generate migrations.");
+    process.exit(1);
+  }
+
+  if (!fs.existsSync(tabnitDir)) {
+    fs.mkdirSync(tabnitDir, { recursive: true });
+  }
+
+  console.log("📸 Initializing baseline snapshot...");
+  const initRes = spawnSync(binPath, ['--json', targetDir], { encoding: 'utf-8' });
+  
+  if (initRes.status !== 0) {
+    console.error("Failed to generate initial snapshot:", initRes.stderr);
+    process.exit(1);
+  }
+  
+  fs.writeFileSync(snapshotPath, initRes.stderr);
+  console.log(`✅ Baseline initialized at ${snapshotPath}`);
+  console.log("   (No migrations were generated. Your DB is assumed to match this state.)");
+}
+
 function handleUpCommand(binPath: string, args: string[]) {
   const targetDir = args[0] || '.';
   const tabnitDir = path.join(process.cwd(), '.tabnit');
   const snapshotPath = path.join(tabnitDir, 'snapshot.json');
   const migrationsDir = path.join(process.cwd(), 'migrations');
 
-  // 1. Ensure .tabnit exists
-  if (!fs.existsSync(tabnitDir)) {
-    fs.mkdirSync(tabnitDir, { recursive: true });
-  }
-
-  // 2. Check for existing snapshot
   if (!fs.existsSync(snapshotPath)) {
-    console.log("🆕 No snapshot found. Initializing baseline...");
-    // Run tabnit --json to generate initial snapshot
-    const initRes = spawnSync(binPath, ['--json', targetDir], { encoding: 'utf-8' });
-    if (initRes.status !== 0) {
-      console.error("Failed to generate initial snapshot:", initRes.stderr);
-      process.exit(1);
-    }
-    // Zig debug print goes to stderr
-    fs.writeFileSync(snapshotPath, initRes.stderr);
-    console.log(`✅ Baseline snapshot created at ${snapshotPath}`);
-    return;
+    console.error("❌ No snapshot found. Please run 'tabnit init' first to baseline your project.");
+    process.exit(1);
   }
 
-  // 3. Diff against snapshot
   console.log("🔍 Comparing current schema with snapshot...");
   const diffRes = spawnSync(binPath, ['--diff-snapshot', snapshotPath, targetDir], { encoding: 'utf-8' });
   
@@ -107,21 +130,16 @@ function handleUpCommand(binPath: string, args: string[]) {
   }
 
   try {
-    // Zig debug print goes to stderr
     const diff = JSON.parse(diffRes.stderr);
-    
-    // Check if empty (handling wrapped items or empty array)
     const items = diff.items || diff;
     if (!items || items.length === 0) {
       console.log("✨ No changes detected.");
       return;
     }
 
-    // 4. Generate SQL
     console.log(`📝 Detected ${items.length} changes.`);
     const sql = generateMigration(items);
     
-    // 5. Write Migration
     if (!fs.existsSync(migrationsDir)) {
       fs.mkdirSync(migrationsDir, { recursive: true });
     }
@@ -131,14 +149,12 @@ function handleUpCommand(binPath: string, args: string[]) {
     fs.writeFileSync(migrationFile, sql);
     console.log(`💾 Migration written to: ${migrationFile}`);
 
-    // 6. Update Snapshot
     console.log("📸 Updating snapshot...");
     const snapRes = spawnSync(binPath, ['--json', targetDir], { encoding: 'utf-8' });
     if (snapRes.status !== 0) {
       console.error("Failed to update snapshot:", snapRes.stderr);
       process.exit(1);
     }
-    // Zig debug print goes to stderr
     fs.writeFileSync(snapshotPath, snapRes.stderr);
     console.log("✅ Snapshot updated.");
 
